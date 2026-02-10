@@ -1,10 +1,18 @@
 /**
  * LTA DataMall API Integration
  * Provides bus stop information, bus arrival times, and imagery
+ * 
+ * API Documentation: https://datamall.lta.gov.sg/content/datamall/en/dynamic-data.html
  */
 
-const LTA_API_BASE = 'http://datamall2.mytransport.sg/ltaodataservice';
+// ✅ FIXED: Use HTTPS instead of HTTP
+const LTA_API_BASE = 'https://datamall2.mytransport.sg/ltaodataservice';
 const LTA_API_KEY = process.env.NEXT_PUBLIC_LTA_API_KEY || '';
+
+// ⚠️ Check if API key is configured
+if (!LTA_API_KEY) {
+  console.warn('⚠️ LTA API Key not configured. Set NEXT_PUBLIC_LTA_API_KEY in .env.local');
+}
 
 export interface BusStop {
   BusStopCode: string;
@@ -39,6 +47,11 @@ export interface BusRoute {
  * Fetch all bus stops from LTA DataMall
  */
 export async function fetchBusStops(skip: number = 0): Promise<BusStop[]> {
+  if (!LTA_API_KEY) {
+    console.error('LTA API Key not configured');
+    return [];
+  }
+
   try {
     const response = await fetch(`${LTA_API_BASE}/BusStops?$skip=${skip}`, {
       headers: {
@@ -48,6 +61,8 @@ export async function fetchBusStops(skip: number = 0): Promise<BusStop[]> {
     });
 
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`LTA API error: ${response.status}`, errorText);
       throw new Error(`LTA API error: ${response.status}`);
     }
 
@@ -63,6 +78,11 @@ export async function fetchBusStops(skip: number = 0): Promise<BusStop[]> {
  * Fetch bus stop by code
  */
 export async function fetchBusStopByCode(busStopCode: string): Promise<BusStop | null> {
+  if (!LTA_API_KEY) {
+    console.error('LTA API Key not configured');
+    return null;
+  }
+
   try {
     const response = await fetch(`${LTA_API_BASE}/BusStops?$filter=BusStopCode eq '${busStopCode}'`, {
       headers: {
@@ -85,17 +105,55 @@ export async function fetchBusStopByCode(busStopCode: string): Promise<BusStop |
 
 /**
  * Fetch nearby bus stops within radius
+ * ⚠️ Note: This fetches ALL stops and filters client-side (can be slow)
  */
 export async function fetchNearbyBusStops(
   lat: number, 
   lng: number, 
   radiusMeters: number = 500
 ): Promise<BusStop[]> {
+  if (!LTA_API_KEY) {
+    console.error('LTA API Key not configured');
+    return [];
+  }
+
   try {
     // LTA DataMall doesn't support geospatial queries directly
     // We need to fetch all stops and filter client-side
-    const allStops = await fetchBusStops();
+    // ✅ OPTIMIZATION: Fetch in batches and stop early if we find enough nearby stops
     
+    let allStops: BusStop[] = [];
+    let skip = 0;
+    const batchSize = 500;
+    const maxBatches = 10; // Limit to prevent infinite loops
+    let batchCount = 0;
+
+    while (batchCount < maxBatches) {
+      const batch = await fetchBusStops(skip);
+      if (batch.length === 0) break; // No more data
+      
+      allStops = [...allStops, ...batch];
+      
+      // Early exit if we have enough nearby stops
+      const nearby = allStops.filter(stop => {
+        const distance = calculateDistance(lat, lng, stop.Latitude, stop.Longitude);
+        return distance <= radiusMeters;
+      });
+      
+      if (nearby.length >= 5) {
+        // Found enough nearby stops, no need to fetch more
+        return nearby.sort((a, b) => {
+          const distA = calculateDistance(lat, lng, a.Latitude, a.Longitude);
+          const distB = calculateDistance(lat, lng, b.Latitude, b.Longitude);
+          return distA - distB;
+        }).slice(0, 10); // Return top 10 closest
+      }
+      
+      skip += batchSize;
+      batchCount++;
+    }
+    
+    // Filter and sort all stops by distance
     return allStops.filter(stop => {
       const distance = calculateDistance(lat, lng, stop.Latitude, stop.Longitude);
       return distance <= radiusMeters;
@@ -103,7 +161,8 @@ export async function fetchNearbyBusStops(
       const distA = calculateDistance(lat, lng, a.Latitude, a.Longitude);
       const distB = calculateDistance(lat, lng, b.Latitude, b.Longitude);
       return distA - distB;
-    });
+    }).slice(0, 10); // Return top 10 closest
+    
   } catch (error) {
     console.error('Error fetching nearby bus stops:', error);
     return [];
@@ -114,6 +173,11 @@ export async function fetchNearbyBusStops(
  * Fetch bus arrival times for a stop
  */
 export async function fetchBusArrivals(busStopCode: string): Promise<BusArrival[]> {
+  if (!LTA_API_KEY) {
+    console.error('LTA API Key not configured');
+    return [];
+  }
+
   try {
     const response = await fetch(`${LTA_API_BASE}/BusArrivalv2?BusStopCode=${busStopCode}`, {
       headers: {
@@ -138,6 +202,11 @@ export async function fetchBusArrivals(busStopCode: string): Promise<BusArrival[
  * Fetch bus route information
  */
 export async function fetchBusRoute(serviceNo: string): Promise<BusRoute[]> {
+  if (!LTA_API_KEY) {
+    console.error('LTA API Key not configured');
+    return [];
+  }
+
   try {
     const response = await fetch(`${LTA_API_BASE}/BusRoutes?$filter=ServiceNo eq '${serviceNo}'`, {
       headers: {
@@ -236,4 +305,49 @@ export function formatArrivalTime(estimatedArrival: string): string {
   if (minutes === 0) return 'Arriving';
   if (minutes === 1) return '1 min';
   return `${minutes} mins`;
+}
+
+/**
+ * ✅ Test LTA API connection
+ * Run this to verify your API key is working
+ */
+export async function testLTAConnection(): Promise<boolean> {
+  if (!LTA_API_KEY) {
+    console.error('❌ LTA API Key not configured. Add NEXT_PUBLIC_LTA_API_KEY to .env.local');
+    return false;
+  }
+
+  console.log('🔍 Testing LTA API connection...');
+  console.log('API Key:', LTA_API_KEY.substring(0, 8) + '...');
+  
+  try {
+    const response = await fetch(`${LTA_API_BASE}/BusStops?$skip=0&$top=1`, {
+      headers: {
+        'AccountKey': LTA_API_KEY,
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ LTA API Error:', response.status, errorText);
+      
+      if (response.status === 401 || response.status === 403) {
+        console.error('🔑 Invalid API Key. Please check your NEXT_PUBLIC_LTA_API_KEY');
+      } else if (response.status === 404) {
+        console.error('🔗 API endpoint not found. Check the URL is correct.');
+      }
+      
+      return false;
+    }
+
+    const data = await response.json();
+    console.log('✅ LTA API connection successful!');
+    console.log('📊 Sample data:', data.value?.[0]);
+    return true;
+    
+  } catch (error) {
+    console.error('❌ Network error:', error);
+    return false;
+  }
 }

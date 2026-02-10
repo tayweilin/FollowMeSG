@@ -24,6 +24,18 @@ import TextualNavigation from '@/components/TextualNavigation';
 import SimplePictorialGuide from '@/components/SimplePictorialGuide';
 import NavigationModeSelector from '@/components/NavigationModeSelector';
 
+// Helper function to calculate distance between two coordinates
+function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371; // Earth's radius in kilometers
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 interface PatientInterfaceProps {
   patient: PatientInfo;
   onNavigationStart?: (destination: SavedDestination) => void;
@@ -209,57 +221,100 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
     let newSteps: NavigationStep[] = [];
     let newPath: [number, number][] = [];
 
-    // 1. Try fetching from internal API (LTA/OneMap wrapper)
+    // 1. Try comprehensive multi-modal routing (LTA + MRT + Walking)
     try {
-      console.log('🚀 Fetching route from /api/navigation...');
-      const response = await fetch('/api/navigation', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start, end }),
+      console.log('🚀 Fetching route from /api/multi-modal-route...');
+      const params = new URLSearchParams({
+        startLat: start[0].toString(),
+        startLng: start[1].toString(),
+        destLat: end[0].toString(),
+        destLng: end[1].toString(),
+        mode: 'fastest'
       });
 
+      const response = await fetch(`/api/multi-modal-route?${params}`);
+
       if (!response.ok) {
-        throw new Error(`API returned ${response.status}`);
+        throw new Error(`Multi-modal API returned ${response.status}`);
       }
 
       const data = await response.json();
       
-      if (data.steps && data.steps.length > 0) {
-        newSteps = data.steps.map((step: any, index: number) => ({
-          id: index + 1,
+      if (data.success && data.recommendedRoute?.steps?.length > 0) {
+        newSteps = data.recommendedRoute.steps.map((step: any) => ({
+          id: step.id,
           direction: step.direction || "straight",
           instruction: step.instruction,
           distance: step.distance,
           coordinates: step.coordinates,
         }));
 
-        newPath = data.path || [start, end];
+        newPath = data.recommendedRoute.path || [start, end];
         
-        console.log('âœ… API route loaded:', newSteps.length, 'steps');
+        console.log(`✅ Multi-modal route loaded: ${newSteps.length} steps (${data.recommendedRoute.type})`);
       } else {
-        throw new Error('No steps in API response');
+        throw new Error('No steps in multi-modal response');
       }
-    } catch (apiError) {
-      console.warn('⚠️ API routing failed, using fallback:', apiError);
+    } catch (multiModalError) {
+      console.warn('⚠️ Multi-modal routing failed, trying route-planner...', multiModalError);
       
-      // 2. Fallback to simple straight-line route
-      newSteps = [
-        {
-          id: 1,
-          direction: "straight",
-          instruction: `Head towards ${destination.name}`,
-          distance: "500m",
-          coordinates: start,
-        },
-        {
-          id: 2,
-          direction: "destination",
-          instruction: `You have arrived at ${destination.name}!`,
-          coordinates: end,
-        },
-      ];
+      // 2. Fallback to LTA bus route planner  
+      try {
+        console.log('🚌 Trying LTA route planner...');
+        const response = await fetch('/api/route-planner', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            start, 
+            end, 
+            destination: destination.name 
+          }),
+        });
 
-      newPath = [start, end];
+        if (response.ok) {
+          const data = await response.json();
+          
+          if (data.steps && data.steps.length > 0) {
+            newSteps = data.steps.map((step: any) => ({
+              id: step.id,
+              direction: step.direction || "straight", 
+              instruction: step.instruction,
+              distance: step.distance,
+              coordinates: step.coordinates,
+            }));
+
+            newPath = data.path || [start, end];
+            
+            console.log(`✅ LTA route loaded: Bus ${data.busNumber} (${newSteps.length} steps)`);
+          } else {
+            throw new Error('No steps in route-planner response');
+          }
+        } else {
+          throw new Error(`Route planner returned ${response.status}`);
+        }
+      } catch (ltaError) {
+        console.warn('⚠️ LTA routing failed, using simple fallback:', ltaError);
+        
+        // 3. Final fallback to simple walking route
+        newSteps = [
+          {
+            id: 1,
+            direction: "straight",
+            instruction: `Walk towards ${destination.name}`,
+            distance: `${Math.round(haversineDistance(start[0], start[1], end[0], end[1]) * 1000)}m`,
+            coordinates: start,
+          },
+          {
+            id: 2,
+            direction: "destination",
+            instruction: `You have arrived at ${destination.name}!`,
+            coordinates: end,
+          },
+        ];
+
+        newPath = [start, end];
+        console.log('📍 Using simple walking directions');
+      }
     }
 
     setNavigationSteps(newSteps);
@@ -363,6 +418,7 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
             currentLocation={currentLocation}
             destination={selectedDestination}
             routePath={routePath}
+            navigationSteps={navigationSteps}
             onClose={handleCloseNavigationMode}
             onSwitchToAR={() => setNavigationMode('ar')}
           />
