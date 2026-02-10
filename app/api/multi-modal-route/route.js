@@ -459,7 +459,7 @@ async function fetchOneMapWalkingRoute(startLat, startLng, destLat, destLng) {
   }
 }
 
-// Fetch walking route from OSRM
+// Fetch walking route from OSRM - CLEANED for pedestrian use
 async function fetchOSRMWalkingRoute(startLat, startLng, destLat, destLng) {
   try {
     const url = `https://router.project-osrm.org/route/v1/foot/${startLng},${startLat};${destLng},${destLat}?overview=full&geometries=geojson&steps=true`;
@@ -476,18 +476,40 @@ async function fetchOSRMWalkingRoute(startLat, startLng, destLat, destLng) {
       route.legs[0].steps.forEach((step, index) => {
         const maneuver = step.maneuver;
         let instruction = maneuver.type;
-        const name = step.name || 'the path';
+        const name = step.name || '';
         
+        // ✅ FILTER OUT HIGHWAYS AND MAJOR ROADS
+        const isHighway = name && (
+          name.toLowerCase().includes('highway') ||
+          name.toLowerCase().includes('expressway') ||
+          name.toLowerCase().includes('motorway') ||
+          name.match(/^[A-Z]+\d+$/) || // Like "PIE", "CTE", "AYE"
+          name.match(/^\d+$/) // Pure numbers
+        );
+
+        // Generate pedestrian-friendly instructions
         if (maneuver.type === 'turn') {
-          instruction = `Turn ${maneuver.modifier || ''} onto ${name}`;
+          if (isHighway) {
+            instruction = `Turn ${maneuver.modifier || 'ahead'}`;
+          } else {
+            instruction = `Turn ${maneuver.modifier || ''} ${name ? 'onto ' + name : ''}`;
+          }
         } else if (maneuver.type === 'depart') {
-          instruction = `Head ${maneuver.modifier || 'towards'} on ${name}`;
+          if (isHighway) {
+            instruction = `Start walking ${maneuver.modifier || 'forward'}`;
+          } else {
+            instruction = `Head ${maneuver.modifier || 'forward'} ${name ? 'on ' + name : ''}`;
+          }
         } else if (maneuver.type === 'arrive') {
           instruction = 'You have arrived at your destination';
         } else if (maneuver.type === 'new name' || maneuver.type === 'continue') {
-          instruction = `Continue on ${name}`;
+          if (isHighway) {
+            instruction = 'Continue walking';
+          } else {
+            instruction = `Continue ${name ? 'on ' + name : 'walking'}`;
+          }
         } else {
-          instruction = `${maneuver.type} onto ${name}`;
+          instruction = isHighway ? 'Continue walking' : `Walk ${name ? 'on ' + name : 'forward'}`;
         }
 
         steps.push({

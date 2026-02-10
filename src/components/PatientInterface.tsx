@@ -229,31 +229,51 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
         startLng: start[1].toString(),
         destLat: end[0].toString(),
         destLng: end[1].toString(),
-        mode: 'fastest'
+        mode: 'transit'
       });
-
+    
       const response = await fetch(`/api/multi-modal-route?${params}`);
-
-      if (!response.ok) {
-        throw new Error(`Multi-modal API returned ${response.status}`);
-      }
-
-      const data = await response.json();
       
-      if (data.success && data.recommendedRoute?.steps?.length > 0) {
-        newSteps = data.recommendedRoute.steps.map((step: any) => ({
-          id: step.id,
-          direction: step.direction || "straight",
-          instruction: step.instruction,
-          distance: step.distance,
-          coordinates: step.coordinates,
-        }));
-
-        newPath = data.recommendedRoute.path || [start, end];
-        
-        console.log(`✅ Multi-modal route loaded: ${newSteps.length} steps (${data.recommendedRoute.type})`);
-      } else {
-        throw new Error('No steps in multi-modal response');
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Multi-modal route response:', data);
+    
+        if (data.recommendedRoute && data.recommendedRoute.steps) {
+          const route = data.recommendedRoute;
+          
+          // ✅ FIXED: Flatten nested transit steps
+          newSteps = [];
+          let stepId = 1;
+    
+          route.steps.forEach((segment: any) => {
+            // Check if this segment has detailedSteps (walking segments)
+            if (segment.detailedSteps && segment.detailedSteps.length > 0) {
+              // Flatten walking substeps
+              segment.detailedSteps.forEach((substep: any) => {
+                newSteps.push({
+                  id: stepId++,
+                  direction: substep.direction || "straight",
+                  instruction: substep.instruction,
+                  distance: substep.distance,
+                  coordinates: substep.coordinates || (segment.from ? [segment.from.lat, segment.from.lng] : start),
+                });
+              });
+            } else {
+              // Transit segments (MRT/Bus) - add as single step
+              newSteps.push({
+                id: stepId++,
+                direction: segment.type || "straight",
+                instruction: segment.instruction,
+                distance: segment.distance || `${segment.duration} min`,
+                coordinates: segment.from ? [segment.from.lat, segment.from.lng] : start,
+              });
+            }
+          });
+    
+          newPath = route.path || [start, end];
+          
+          console.log(`✅ Multi-modal route loaded: ${newSteps.length} steps (flattened)`);
+        }
       }
     } catch (multiModalError) {
       console.warn('⚠️ Multi-modal routing failed, trying route-planner...', multiModalError);
@@ -267,7 +287,7 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
           body: JSON.stringify({ 
             start, 
             end, 
-            destination: destination.name 
+            destination: destination.name, 
           }),
         });
 
@@ -376,6 +396,16 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
   // ✨ Close navigation mode handler
   const handleCloseNavigationMode = () => {
     setNavigationMode(null);
+    setShowModeSelector(false);
+    setAppView("home");
+    setSelectedDestination(null);
+    setCurrentStepIndex(0);
+
+    stop();
+
+    if (patient?.id) {
+      updateNavigationStatus(patient.id, false, null);
+    }
   };
 
   // Profile view
@@ -429,6 +459,8 @@ const PatientInterface = ({ patient, onNavigationStart }: PatientInterfaceProps)
           <SimplePictorialGuide
             currentLocation={currentLocation}
             destination={selectedDestination}
+            routePath={routePath}
+            navigationSteps={navigationSteps}
             onClose={handleCloseNavigationMode}
           />
         )}

@@ -280,7 +280,14 @@ export default function TextualNavigation({
       setCurrentStepIndex(currentStepIndex + 1);
     } else {
       // Last step - close navigation
-      onClose();
+      const updatedSteps = [...steps];
+      updatedSteps[currentStepIndex].completed = true;
+      setSteps(updatedSteps);
+      
+      // ✅ Wait 1.5 seconds then return to home
+      setTimeout(() => {
+        onClose();
+      }, 2000);
     }
   };
 
